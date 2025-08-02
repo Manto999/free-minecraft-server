@@ -1,0 +1,27 @@
+{
+  "name": "minecraft-crossplay-server",
+  "version": "1.0.0",
+  "description": "Minecraft Crossplay Server with Java and Bedrock support",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "minecraft",
+    "server",
+    "crossplay",
+    "bedrock",
+    "java"
+  ],
+  "author": "SUBHAJEET",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}
