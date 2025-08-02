@@ -21,24 +21,42 @@ class MinecraftCrossplayServer {
         this.serverStatus = 'offline';
         this.startTime = null;
         this.serverReady = false;
-        this.isKoyeb = process.env.NODE_ENV === 'production';
+        this.isProduction = process.env.NODE_ENV === 'production';
         this.javaInstalled = true;
         this.restartAttempts = 0;
-        this.downloadQueue = [];
         this.memoryMonitorInterval = null;
+        this.initializationComplete = false;
 
         this.setupExpress();
         this.setupRoutes();
         this.setupServerProperties();
         this.getPublicIP();
 
-        // Stagger initialization to reduce startup CPU load
-        if (this.isKoyeb) {
-            setTimeout(() => {
-                this.downloadRequiredFiles().catch(error => {
-                    console.error('❌ Failed to download required files:', error.message);
-                });
-            }, 2000);
+        // Start initialization sequence for production
+        if (this.isProduction) {
+            this.initializeServer();
+        }
+    }
+
+    async initializeServer() {
+        console.log('🔧 Starting server initialization sequence...');
+
+        try {
+            // Step 1: Download required files
+            await this.downloadRequiredFiles();
+
+            // Step 2: Wait for file system to settle
+            await this.sleep(2000);
+
+            // Step 3: Auto-start the Minecraft server
+            console.log('🚀 Auto-starting Minecraft server...');
+            await this.startMinecraftServer();
+
+            this.initializationComplete = true;
+            console.log('✅ Server initialization complete!');
+        } catch (error) {
+            console.error('❌ Server initialization failed:', error.message);
+            this.initializationComplete = true;
         }
     }
 
@@ -55,19 +73,25 @@ class MinecraftCrossplayServer {
         } catch (error) {
             console.log('⚠️  Error detecting local IP:', error.message);
         }
-        return this.isKoyeb ? '0.0.0.0' : 'localhost';
+        return this.isProduction ? '0.0.0.0' : '127.0.0.1';
     }
 
     async getPublicIP() {
         try {
-            // For production, try environment variable first
-            if (process.env.KOYEB_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL) {
-                this.publicIP = process.env.KOYEB_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL;
-                console.log(`🌐 Public Domain: ${this.publicIP}`);
+            // Check for platform-specific environment variables
+            if (process.env.RAILWAY_STATIC_URL) {
+                this.publicIP = process.env.RAILWAY_STATIC_URL.replace('https://', '').replace('http://', '');
+                console.log(`🌐 Railway Domain: ${this.publicIP}`);
                 return;
             }
 
-            // Only fetch external IP if needed, with timeout
+            if (process.env.KOYEB_PUBLIC_DOMAIN) {
+                this.publicIP = process.env.KOYEB_PUBLIC_DOMAIN.replace('https://', '').replace('http://', '');
+                console.log(`🌐 Koyeb Domain: ${this.publicIP}`);
+                return;
+            }
+
+            // Fallback to external IP detection
             const https = require('https');
             const options = {
                 hostname: 'api.ipify.org',
@@ -90,23 +114,22 @@ class MinecraftCrossplayServer {
 
             req.on('error', (error) => {
                 console.log('⚠️  Could not detect public IP:', error.message);
-                this.publicIP = this.isKoyeb ? 'production-server' : 'localhost';
+                this.publicIP = this.isProduction ? 'production-server' : '127.0.0.1';
             });
 
             req.on('timeout', () => {
                 req.destroy();
-                this.publicIP = this.isKoyeb ? 'production-server' : 'localhost';
+                this.publicIP = this.isProduction ? 'production-server' : '127.0.0.1';
             });
 
             req.end();
         } catch (error) {
-            this.publicIP = this.isKoyeb ? 'production-server' : 'localhost';
+            this.publicIP = this.isProduction ? 'production-server' : '127.0.0.1';
         }
     }
 
-    // Minimal download setup to prevent memory issues
     async downloadRequiredFiles() {
-        console.log('📥 Downloading minimal server files for memory optimization...');
+        console.log('📥 Downloading required server files for crossplay...');
 
         if (!fs.existsSync(this.serverPath)) {
             fs.mkdirSync(this.serverPath, { recursive: true });
@@ -117,37 +140,53 @@ class MinecraftCrossplayServer {
         }
 
         try {
-            // Essential files only to reduce memory usage
-            console.log('📥 Step 1/3: Downloading Paper server...');
+            console.log('📥 Step 1/5: Downloading Paper server...');
             await this.downloadFile(
                 'https://api.papermc.io/v2/projects/paper/versions/1.20.4/builds/497/downloads/paper-1.20.4-497.jar',
                 path.join(this.serverPath, this.jarFile),
                 'Paper Server'
             );
 
-            await this.sleep(1500);
+            await this.sleep(1000);
 
-            console.log('📥 Step 2/3: Downloading Geyser (essential for crossplay)...');
+            console.log('📥 Step 2/5: Downloading Geyser (Bedrock support)...');
             await this.downloadFile(
                 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot',
                 path.join(this.serverPath, 'plugins', 'Geyser-Spigot.jar'),
                 'Geyser Plugin'
             );
 
-            await this.sleep(1500);
+            await this.sleep(1000);
 
-            console.log('📥 Step 3/3: Downloading Floodgate (essential for crossplay)...');
+            console.log('📥 Step 3/5: Downloading Floodgate (Bedrock auth)...');
             await this.downloadFile(
                 'https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot',
                 path.join(this.serverPath, 'plugins', 'floodgate-spigot.jar'),
                 'Floodgate Plugin'
             );
 
-            // Skip ViaVersion/ViaBackwards to save memory and prevent compatibility issues
-            console.log('⚠️  Running in minimal mode - ViaVersion plugins skipped to save memory');
-            console.log('✅ Essential crossplay files downloaded successfully');
+            await this.sleep(1000);
+
+            console.log('📥 Step 4/5: Downloading ViaVersion (multi-version)...');
+            await this.downloadFile(
+                'https://hangar.papermc.io/api/v1/projects/ViaVersion/versions/5.4.1/PAPER/download',
+                path.join(this.serverPath, 'plugins', 'ViaVersion.jar'),
+                'ViaVersion Plugin'
+            );
+
+            await this.sleep(1000);
+
+            console.log('📥 Step 5/5: Downloading ViaBackwards (backward compatibility)...');
+            await this.downloadFile(
+                'https://hangar.papermc.io/api/v1/projects/ViaBackwards/versions/5.3.2/PAPER/download',
+                path.join(this.serverPath, 'plugins', 'ViaBackwards.jar'),
+                'ViaBackwards Plugin'
+            );
+
+            console.log('✅ All crossplay server files downloaded successfully');
         } catch (error) {
             console.error('❌ Error downloading files:', error.message);
+            throw error;
         }
     }
 
@@ -253,6 +292,7 @@ class MinecraftCrossplayServer {
             res.json({
                 status: 'healthy',
                 server: this.serverStatus,
+                initialized: this.initializationComplete,
                 memory: this.getMemoryUsage(),
                 timestamp: Date.now()
             });
@@ -273,39 +313,48 @@ class MinecraftCrossplayServer {
     }
 
     setupRoutes() {
+        // Main route - will serve your custom index.html
         this.app.get('/', (req, res) => {
             try {
                 const indexPath = path.join(__dirname, 'public', 'index.html');
                 if (fs.existsSync(indexPath)) {
                     res.sendFile(indexPath);
                 } else {
-                    res.send(`
-                        <h1>🎮 Minecraft Crossplay Server</h1>
-                        <p><strong>Status:</strong> ${this.serverStatus}</p>
-                        <p><strong>Java Edition:</strong> ${this.publicIP}:${this.javaPort}</p>
-                        <p><strong>Bedrock Edition:</strong> ${this.publicIP}:${this.bedrockPort}</p>
-                        <p>✅ Server is running with memory optimization!</p>
-                    `);
+                    res.send('<h1>Minecraft Crossplay Server</h1><p>index.html not found in public folder</p>');
                 }
             } catch (error) {
-                res.send('<h1>Minecraft Crossplay Server</h1><p>Server is running!</p>');
+                res.send('<h1>Minecraft Crossplay Server</h1><p>Error loading interface</p>');
             }
         });
 
+        // Status endpoint - Compatible with your HTML
         this.app.get('/status', (req, res) => {
             const uptime = this.startTime ? Math.floor((Date.now() - this.startTime) / 1000) : 0;
             res.json({
                 status: this.serverStatus,
                 running: this.minecraftProcess !== null,
                 ready: this.serverReady,
+                initialized: this.initializationComplete,
                 uptime: uptime,
+                localIP: this.localIP,
                 publicIP: this.publicIP,
                 javaPort: this.javaPort,
                 bedrockPort: this.bedrockPort,
                 memory: this.getMemoryUsage(),
                 connections: {
-                    java: `${this.publicIP}:${this.javaPort}`,
-                    bedrock: `${this.publicIP}:${this.bedrockPort}`
+                    local: {
+                        java: `${this.localIP}:${this.javaPort}`,
+                        bedrock: `${this.localIP}:${this.bedrockPort}`
+                    },
+                    network: {
+                        java: `${this.localIP}:${this.javaPort}`,
+                        bedrock: `${this.localIP}:${this.bedrockPort}`
+                    },
+                    internet: this.publicIP && this.publicIP !== 'Unable to detect' ? {
+                        java: `${this.publicIP}:${this.javaPort}`,
+                        bedrock: `${this.publicIP}:${this.bedrockPort}`,
+                        note: this.isProduction ? "Direct connection available" : "Port forwarding required"
+                    } : null
                 }
             });
         });
@@ -321,7 +370,7 @@ class MinecraftCrossplayServer {
             this.startMinecraftServer();
             res.json({
                 success: true,
-                message: 'Server is starting with memory optimization...',
+                message: 'Server is starting...',
                 status: 'starting'
             });
         });
@@ -354,7 +403,7 @@ class MinecraftCrossplayServer {
             this.executeCommand(command);
             res.json({
                 success: true,
-                message: `Command executed: ${command}`
+                message: `Command sent: ${command}`
             });
         });
     }
@@ -362,53 +411,44 @@ class MinecraftCrossplayServer {
     setupServerProperties() {
         const propertiesPath = path.join(this.serverPath, 'server.properties');
 
-        // Memory-optimized server properties
         const properties = `
 server-ip=0.0.0.0
 server-port=${this.javaPort}
 gamemode=survival
 difficulty=easy
-max-players=6
-motd=§aCrossplay Server §7| §eMemory Optimized §7| §bStable
-server-name=OptimizedCrossplayServer
+max-players=10
+motd=§aCrossplay Server §7| §eOptimized §7| §bAll Versions
+server-name=CrossplayServer
 online-mode=false
 enforce-whitelist=false
 
-# Memory-Optimized Settings
-view-distance=3
-simulation-distance=2
+# Optimized Settings
+view-distance=6
+simulation-distance=4
 max-tick-time=60000
 
-# Chunk loading optimizations
-max-auto-save-chunks-per-tick=3
-chunk-gc-period=600
-max-world-size=3000
-
-# Entity optimizations (reduce memory usage)
-entity-activation-range.animals=12
-entity-activation-range.monsters=16
-entity-activation-range.raiders=24
-entity-activation-range.misc=4
+# Entity optimizations
+entity-activation-range.animals=16
+entity-activation-range.monsters=24
+entity-activation-range.raiders=32
+entity-activation-range.misc=8
 tick-inactive-villagers=false
-entity-broadcast-range-percentage=50
 
-# Network optimizations
+# Performance tweaks
+max-auto-save-chunks-per-tick=6
+auto-save-interval=6000
+max-world-size=10000
 network-compression-threshold=256
-enable-query=false
+enable-query=true
 enable-status=true
-enable-command-block=false
+enable-command-block=true
 spawn-protection=0
-
-# World settings
 allow-nether=true
-allow-end=false
+allow-end=true
 level-name=world
 require-resource-pack=false
 prevent-proxy-connections=false
-
-# Performance tweaks
 use-native-transport=true
-sync-chunk-writes=false
         `.trim();
 
         if (!fs.existsSync(this.serverPath)) {
@@ -429,18 +469,18 @@ sync-chunk-writes=false
                         if (!error && stdout.trim()) {
                             const [pid, rss, vsz] = stdout.trim().split(/\s+/);
                             const memoryMB = Math.round(rss / 1024);
-                            console.log(`📊 Memory Usage: ${memoryMB}MB RSS`);
+                            console.log(`📊 Minecraft Memory Usage: ${memoryMB}MB RSS`);
 
-                            if (memoryMB > 600) {
-                                console.log('⚠️  High memory usage detected. Server may need optimization.');
+                            if (memoryMB > 700) {
+                                console.log('⚠️  High memory usage detected.');
                             }
                         }
                     });
                 } catch (error) {
-                    // Silently handle errors to prevent spam
+                    // Silently handle errors
                 }
             }
-        }, 60000); // Check every minute
+        }, 60000);
     }
 
     stopMemoryMonitoring() {
@@ -461,35 +501,33 @@ sync-chunk-writes=false
         this.startTime = Date.now();
 
         console.log('\n' + '='.repeat(60));
-        console.log('🚀 STARTING MEMORY-OPTIMIZED CROSSPLAY SERVER');
+        console.log('🚀 STARTING MINECRAFT CROSSPLAY SERVER');
         console.log('='.repeat(60));
         console.log('📡 Status: STARTING...');
         console.log(`🌐 Public IP: ${this.publicIP || 'Detecting...'}`);
-        console.log('💾 Memory: Fixed OutOfMemoryError issues');
+        console.log('💾 Memory: Optimized for stability');
         console.log('⏳ Please wait while server initializes...');
         console.log('='.repeat(60));
 
-        // Memory-optimized JVM arguments (Fixed OutOfMemoryError)
+        // Memory-optimized JVM arguments
         const javaArgs = [
-            '-Xmx768M',                    // Increased to 768MB (Railway can handle this)
-            '-Xms256M',                    // Increased initial memory
-            '-XX:+UseG1GC',                // Switch back to G1GC for better memory management
-            '-XX:MaxGCPauseMillis=200',    // Shorter pauses but more frequent
-            '-XX:G1HeapRegionSize=16M',    // Optimize G1 regions for our heap size
+            '-Xmx768M',                    // Maximum memory for stability
+            '-Xms256M',                    // Initial memory
+            '-XX:+UseG1GC',                // G1 garbage collector
+            '-XX:MaxGCPauseMillis=200',    // GC pause optimization
+            '-XX:G1HeapRegionSize=16M',    // G1 region size
             '-XX:+DisableExplicitGC',
             '-XX:+UseCompressedOops',
             '-XX:+OptimizeStringConcat',
             '-Dfile.encoding=UTF-8',
             '-Djava.awt.headless=true',
-            // Minecraft-specific memory optimizations
             '-Dpaper.playerconnection.keepalive=60',
-            '-Dpaper.maxChunkSendsPerTick=56',  // Limit chunk sending
             '-jar',
             this.jarFile,
             'nogui'
         ];
 
-        console.log('💾 JVM Settings: Max 768MB, G1GC, Memory-optimized');
+        console.log('💾 JVM Settings: Max 768MB, G1GC, Optimized');
 
         this.minecraftProcess = spawn('java', javaArgs, {
             cwd: this.serverPath,
@@ -509,23 +547,24 @@ sync-chunk-writes=false
                 this.serverReady = true;
                 this.restartAttempts = 0;
                 console.log('\n' + '🎉'.repeat(20));
-                console.log('✅ MEMORY-OPTIMIZED SERVER IS NOW ONLINE!');
+                console.log('✅ CROSSPLAY SERVER IS NOW ONLINE!');
                 console.log('🎉'.repeat(20));
 
-                // Start memory monitoring
                 this.startMemoryMonitoring();
-
                 setTimeout(() => this.displayConnectionInfo(), 1000);
             }
 
-            if (message.includes('Geyser') && message.includes('Started')) {
+            if (message.includes('Geyser') && message.includes('Started Geyser')) {
                 console.log('🔗 Crossplay bridge (Geyser) is ONLINE!');
+            }
+
+            if (message.includes('ViaVersion') && message.includes('enabled')) {
+                console.log('🔄 Multi-version support (ViaVersion) is ONLINE!');
             }
         });
 
         this.minecraftProcess.stderr.on('data', (data) => {
             const error = data.toString().trim();
-            // Log important errors and memory issues
             if (error.includes('ERROR') || error.includes('FATAL') || error.includes('OutOfMemoryError')) {
                 console.error(`[MC ERROR]: ${error}`);
             }
@@ -545,7 +584,6 @@ sync-chunk-writes=false
             this.serverReady = false;
             this.startTime = null;
 
-            // Stop memory monitoring
             this.stopMemoryMonitoring();
 
             if (code !== 0) {
@@ -568,9 +606,9 @@ sync-chunk-writes=false
     }
 
     displayConnectionInfo() {
-        console.log('\n' + '='.repeat(60));
+        console.log('\n' + '='.repeat(70));
         console.log('🎮 MINECRAFT CROSSPLAY SERVER IS ONLINE! 🎮');
-        console.log('='.repeat(60));
+        console.log('='.repeat(70));
 
         if (this.publicIP && this.publicIP !== 'Unable to detect') {
             console.log('\n📋 SHARE WITH FRIENDS:');
@@ -579,11 +617,13 @@ sync-chunk-writes=false
             console.log('   ✅ No port forwarding needed!');
         }
 
+        console.log(`\n🌐 Web Management: https://${this.publicIP}`);
+
         console.log('\n🎯 SUPPORTED VERSIONS:');
-        console.log('   📱 Java Edition: 1.20.4 (stable)');
+        console.log('   📱 Java Edition: 1.8.x to 1.21.x (ALL VERSIONS)');
         console.log('   🎮 Bedrock Edition: All platforms');
-        console.log('\n💾 MEMORY STATUS: Optimized to prevent OutOfMemoryError');
-        console.log('='.repeat(60) + '\n');
+        console.log('\n💾 FEATURES: Crossplay, Multi-version, Memory optimized');
+        console.log('='.repeat(70) + '\n');
     }
 
     stopMinecraftServer() {
@@ -591,7 +631,6 @@ sync-chunk-writes=false
             this.serverStatus = 'stopping';
             console.log('\n⏹️  Stopping Minecraft server...');
 
-            // Stop memory monitoring
             this.stopMemoryMonitoring();
 
             try {
@@ -643,6 +682,7 @@ sync-chunk-writes=false
             }
 
             console.log(`🚀 Minecraft Server Manager running on port ${finalPort}`);
+            console.log(`🎨 Using custom web interface from public/index.html`);
             console.log(`💾 Memory-optimized deployment (Fixed OutOfMemoryError)`);
             console.log(`🌐 Public URL will be available after deployment`);
             console.log('='.repeat(50));
